@@ -4,11 +4,22 @@ import Foundation
 
 // MARK: - Theme
 struct CopybinTheme {
-    static let headerGradient = AnyShapeStyle(.regularMaterial)
-    static let cardBG = AnyShapeStyle(.regularMaterial)
-    static let cardStroke = Color.black.opacity(0.07)
-    static let radius: CGFloat = 14
-    static let shadow = Color.black.opacity(0.06)
+    static let headerGradient: AnyShapeStyle = AnyShapeStyle(
+        LinearGradient(
+            stops: [
+                .init(color: Color(hue: 0.95, saturation: 0.15, brightness: 0.9), location: 0.0),
+                .init(color: Color(hue: 0.78, saturation: 0.20, brightness: 0.9), location: 0.4),
+                .init(color: Color(hue: 0.60, saturation: 0.35, brightness: 0.9), location: 1.0)
+            ],
+            startPoint: .topLeading, endPoint: .bottomTrailing
+        )
+    )
+    static let cardBG: AnyShapeStyle = AnyShapeStyle(
+        Color(.sRGB, red: 0.92, green: 0.94, blue: 0.96, opacity: 0.9)
+    )
+    static let cardStroke = Color.black.opacity(0.25)
+    static let radius: CGFloat = 10
+    static let shadow = Color.black.opacity(0.1)
 }
 
 extension ClipboardItem.ClipboardType {
@@ -326,13 +337,13 @@ struct ClipboardCard: View {
             // Ações
             HStack(spacing: 6) {
                 Button(action: onCopy) {
-                    Label("Copiar", systemImage: "doc.on.doc")
+                    Label("Copy", systemImage: "doc.on.doc")
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
 
                 Button(role: .destructive, action: onDelete) {
-                    Label("Excluir", systemImage: "trash")
+                    Label("Delete", systemImage: "trash")
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
@@ -390,86 +401,88 @@ struct ContentView: View {
     }
     
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             // HEADER
             ZStack(alignment: .bottomLeading) {
-                RoundedRectangle(cornerRadius: 18)
+                RoundedRectangle(cornerRadius: 10)
                     .fill(CopybinTheme.headerGradient)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 18)
+                        RoundedRectangle(cornerRadius: 10)
                             .strokeBorder(.white.opacity(0.15), lineWidth: 1)
                     )
-
                 VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 10) {
+                    HStack(spacing: 8) {
                         Image(systemName: "doc.on.clipboard.fill")
                             .font(.system(size: 16, weight: .bold))
                             .padding(8)
                             .background(.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 10))
                         Text("Clipboard History")
                             .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.95))
+                            .foregroundColor(.black)
                         Spacer(minLength: 8)
-
+                        
                         Toggle("Auto-hide", isOn: $autoMinimize)
                             .toggleStyle(.switch)
                             .labelsHidden()
-                            .help("Minimiza ao colar")
+                            .help("Minimize window to tray")
                             .padding(.trailing, 2)
-
+                        
                         Button("Clear All") { clipboardManager.clearAll() }
                             .buttonStyle(.borderedProminent)
                             .tint(.white.opacity(0.25))
                             .foregroundStyle(.white)
                             .controlSize(.small)
                     }
-
-                    // Busca
-                    HStack {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundStyle(.white.opacity(0.8))
-                        TextField("Search…", text: $searchText)
-                            .textFieldStyle(.plain)
-                            .foregroundStyle(.white)
-                            .tint(.white)
-                    }
-                    .padding(.horizontal, 10).padding(.vertical, 8)
-                    .background(.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 10))
-
-                    // Filtros por tipo
-                    HStack {
-                        Button(action: { selectedType = nil }) {
-                            Text("Todos")
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 4)
-                                .background(selectedType == nil ? Color.blue : Color.clear)
-                                .foregroundColor(selectedType == nil ? .white : .primary)
-                                .cornerRadius(4)
-                        }
-                        .buttonStyle(PlainButtonStyle())
+                    HStack(spacing: 8) {
                         
-                        ForEach(ClipboardItem.ClipboardType.allCases, id: \.self) { type in
-                            Button(action: { selectedType = type }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: type.icon)
-                                }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 4)
-                                .background(selectedType == type ? Color.blue : Color.clear)
-                                .foregroundColor(selectedType == type ? .white : .primary)
-                                .cornerRadius(4)
+                        // Filtros por tipo
+                        HStack {
+                            Button(action: { selectedType = nil }) {
+                                Text("All")
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 4)
+                                    .background(selectedType == nil ? Color.blue : Color.clear)
+                                    .foregroundColor(selectedType == nil ? .white : .primary)
+                                    .cornerRadius(4)
                             }
                             .buttonStyle(PlainButtonStyle())
+                            
+                            ForEach(ClipboardItem.ClipboardType.allCases, id: \.self) { type in
+                                Button(action: { selectedType = type }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: type.icon)
+                                    }
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 4)
+                                    .background(selectedType == type ? Color.blue : Color.clear)
+                                    .foregroundColor(selectedType == type ? .white : .primary)
+                                    .cornerRadius(4)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
+                            
+                            // Busca
+                            HStack {
+                                Image(systemName: "magnifyingglass")
+                                    .foregroundStyle(.white.opacity(0.8))
+                                TextField("Search…", text: $searchText)
+                                    .textFieldStyle(.plain)
+                                    .foregroundStyle(.white)
+                                    .tint(.white)
+                            }
+                            .padding(.horizontal, 4).padding(.vertical, 4)
+                            .background(.white.opacity(0.28), in: RoundedRectangle(cornerRadius: 10))
+
+                            
+                            Spacer()
                         }
-                        
-                        Spacer()
                     }
                 }
                 .padding(16)
             }
-            .frame(height: 150)
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
+            .frame(height: 100)
+            .padding(.horizontal, 4)
+            .padding(.top, 4)
 
             // LISTA / EMPTY STATE
             if filteredItems.isEmpty {
@@ -485,7 +498,7 @@ struct ContentView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.bottom, 12)
+                .padding(.bottom, 4)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 10) {
@@ -497,8 +510,8 @@ struct ContentView: View {
                             )
                         }
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 12)
+                    .padding(.horizontal, 4)
+                    .padding(.bottom, 4)
                 }
             }
         }

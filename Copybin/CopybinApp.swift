@@ -6,11 +6,10 @@ import AppKit
 struct CopybinApp: App {
     var body: some Scene {
         MenuBarExtra("Copybin", systemImage: "doc.on.clipboard") {
-            ContentView()
-                .frame(minWidth: 420, minHeight: 530)
-
-            Divider()
-            //Button("Exit") { NSApp.terminate(nil) }
+            ZStack {
+                ContentView()
+                    .padding(3)
+            }
         }
         .menuBarExtraStyle(.window)
     }
