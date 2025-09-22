@@ -4,7 +4,7 @@ import Foundation
 
 // MARK: - Modelo de dados para itens do clipboard
 struct ClipboardItem: Identifiable, Codable {
-    let id = UUID()
+    var id = UUID()
     let content: String
     let imageData: Data?
     let timestamp: Date
@@ -147,6 +147,52 @@ class ClipboardManager: ObservableObject {
         }
     }
     
+    func copyAndPaste(_ item: ClipboardItem, shouldMinimize: Bool = true) {
+        // Primeiro coloca no clipboard
+        copyToClipboard(item)
+        
+        // Minimiza a janela se solicitado
+        if shouldMinimize {
+            DispatchQueue.main.async {
+                if let window = NSApplication.shared.windows.first {
+                    window.miniaturize(nil)
+                }
+            }
+        }
+        
+        // Aguarda um momento para garantir que o clipboard foi atualizado e a janela minimizada
+        DispatchQueue.main.asyncAfter(deadline: .now() + (shouldMinimize ? 0.3 : 0.1)) {
+            // Simula Cmd+V
+            self.simulatePaste()
+        }
+    }
+    
+    private func simulatePaste() {
+        // Cria evento de Cmd+V
+        let source = CGEventSource(stateID: .hidSystemState)
+        
+        // Evento de pressionar Cmd
+        let cmdDown = CGEvent(keyboardEventSource: source, virtualKey: 0x37, keyDown: true) // Cmd key
+        cmdDown?.flags = .maskCommand
+        
+        // Evento de pressionar V
+        let vDown = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true) // V key
+        vDown?.flags = .maskCommand
+        
+        // Evento de soltar V
+        let vUp = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false) // V key
+        vUp?.flags = .maskCommand
+        
+        // Evento de soltar Cmd
+        let cmdUp = CGEvent(keyboardEventSource: source, virtualKey: 0x37, keyDown: false) // Cmd key
+        
+        // Envia os eventos
+        cmdDown?.post(tap: .cghidEventTap)
+        vDown?.post(tap: .cghidEventTap)
+        vUp?.post(tap: .cghidEventTap)
+        cmdUp?.post(tap: .cghidEventTap)
+    }
+    
     func deleteItem(_ item: ClipboardItem) {
         items.removeAll { $0.id == item.id }
         saveItems()
@@ -175,6 +221,7 @@ class ClipboardManager: ObservableObject {
 struct ClipboardItemView: View {
     let item: ClipboardItem
     let onCopy: () -> Void
+    let onCopyAndPaste: () -> Void
     let onDelete: () -> Void
     
     var body: some View {
@@ -246,14 +293,15 @@ struct ClipboardItemView: View {
         .padding(.horizontal, 12)
         .background(Color(NSColor.controlBackgroundColor))
         .cornerRadius(8)
-        .onTapGesture(count: 2) {
-            onCopy()
+        .onTapGesture {
+            // Um clique já cola automaticamente
+            onCopyAndPaste()
         }
     }
     
     private func formatDate(_ date: Date) -> String {
         let formatter = DateFormatter()
-        let now = Date()
+        _ = Date()
         let calendar = Calendar.current
         
         if calendar.isDateInToday(date) {
@@ -273,6 +321,7 @@ struct ContentView: View {
     @StateObject private var clipboardManager = ClipboardManager()
     @State private var searchText = ""
     @State private var selectedType: ClipboardItem.ClipboardType? = nil
+    @State private var autoMinimize = true
     
     var filteredItems: [ClipboardItem] {
         var items = clipboardManager.items
@@ -312,6 +361,12 @@ struct ContentView: View {
                     }
                     .buttonStyle(PlainButtonStyle())
                     .foregroundColor(.red)
+                    
+                    // Toggle para auto-minimizar
+                    Toggle("Auto minimizar", isOn: $autoMinimize)
+                        .toggleStyle(SwitchToggleStyle())
+                        .scaleEffect(0.8)
+                        .help("Minimiza a janela automaticamente ao colar")
                 }
                 
                 // Barra de busca
@@ -388,6 +443,9 @@ struct ContentView: View {
                                 item: item,
                                 onCopy: {
                                     clipboardManager.copyToClipboard(item)
+                                },
+                                onCopyAndPaste: {
+                                    clipboardManager.copyAndPaste(item, shouldMinimize: autoMinimize)
                                 },
                                 onDelete: {
                                     clipboardManager.deleteItem(item)
