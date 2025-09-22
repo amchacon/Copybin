@@ -2,6 +2,40 @@ import SwiftUI
 import AppKit
 import Foundation
 
+// MARK: - Theme
+struct CopybinTheme {
+    static let headerGradient = AnyShapeStyle(.regularMaterial)
+    static let cardBG = AnyShapeStyle(.regularMaterial)
+    static let cardStroke = Color.black.opacity(0.07)
+    static let radius: CGFloat = 14
+    static let shadow = Color.black.opacity(0.06)
+}
+
+extension ClipboardItem.ClipboardType {
+    var label: String {
+        switch self {
+        case .text: return "Text"
+        case .url: return "URL"
+        case .email: return "Email"
+        case .image: return "Image"
+        }
+    }
+}
+
+extension Date {
+    var timeAgoString: String {
+        let sec = Int(Date().timeIntervalSince(self))
+        if sec < 60 { return "now" }
+        let min = sec / 60
+        if min < 60 { return "\(min)m" }
+        let h = min / 60
+        if h < 24 { return "\(h)h" }
+        let d = h / 24
+        return "\(d)d"
+    }
+}
+
+
 // MARK: - Modelo de dados para itens do clipboard
 struct ClipboardItem: Identifiable, Codable {
     var id = UUID()
@@ -49,12 +83,51 @@ struct ClipboardItem: Identifiable, Codable {
     }
 }
 
+// MARK: - Image utils (thumbnail + JPEG)
+extension NSImage {
+    func resized(maxDimension: CGFloat) -> NSImage? {
+        let longer = max(size.width, size.height)
+        guard longer > 0 else { return nil }
+        let scale = min(1, maxDimension / longer)
+        let newSize = NSSize(width: size.width * scale, height: size.height * scale)
+
+        let img = NSImage(size: newSize)
+        img.lockFocus()
+        defer { img.unlockFocus() }
+        NSGraphicsContext.current?.imageInterpolation = .high
+        draw(in: NSRect(origin: .zero, size: newSize),
+             from: NSRect(origin: .zero, size: size),
+             operation: .copy, fraction: 1.0)
+        return img
+    }
+
+    func jpegData(quality: CGFloat = 0.65) -> Data? {
+        guard let tiff = tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .jpeg, properties: [.compressionFactor: quality])
+    }
+}
+
+/// Converte Data (tiff/png/etc) -> thumbnail JPEG leve
+func thumbnailJPEG(from data: Data,
+                   maxDimension: CGFloat = 360,
+                   quality: CGFloat = 0.65) -> Data? {
+    guard let img = NSImage(data: data),
+          let resized = img.resized(maxDimension: maxDimension),
+          let jpeg = resized.jpegData(quality: quality) else { return nil }
+    return jpeg
+}
+
 // MARK: - Gerenciador do Clipboard
 class ClipboardManager: ObservableObject {
     @Published var items: [ClipboardItem] = []
     private var lastClipboardContent: Any?
     private var timer: Timer?
     private let maxItems = 100
+    
+    // Debounce
+    private var saveWorkItem: DispatchWorkItem?
+    private let saveDelay: TimeInterval = 0.5
     
     init() {
         loadItems()
@@ -97,25 +170,33 @@ class ClipboardManager: ObservableObject {
     }
     
     func addImageItem(imageData: Data) {
-        let newItem = ClipboardItem(imageData: imageData)
-        
-        // Remove duplicatas baseadas no timestamp (imagens são difíceis de comparar)
+        // Gera thumbnail JPEG leve (descarta o blob grande)
+        guard let thumb = thumbnailJPEG(from: imageData) else {
+            // fallback: se não conseguir gerar thumb, usa o dado original
+            let newItem = ClipboardItem(imageData: imageData)
+            items.insert(newItem, at: 0)
+            if items.count > maxItems { items = Array(items.prefix(maxItems)) }
+            lastClipboardContent = imageData
+            scheduleSave()
+            return
+        }
+
+        let newItem = ClipboardItem(imageData: thumb)
+
+        // Evita duplicatas de imagem muito próximas no tempo
         if let lastItem = items.first,
            lastItem.type == .image,
            Date().timeIntervalSince(lastItem.timestamp) < 1.0 {
-            return // Evita duplicatas de imagem muito próximas
+            return
         }
-        
+
         items.insert(newItem, at: 0)
-        
-        // Limita o número de itens
-        if items.count > maxItems {
-            items = Array(items.prefix(maxItems))
-        }
-        
-        lastClipboardContent = imageData
-        saveItems()
+        if items.count > maxItems { items = Array(items.prefix(maxItems)) }
+
+        lastClipboardContent = imageData // guardamos o último clipboard “original” só para comparação
+        scheduleSave()
     }
+
     
     func addItem(content: String) {
         let newItem = ClipboardItem(content: content)
@@ -131,7 +212,7 @@ class ClipboardManager: ObservableObject {
             items = Array(items.prefix(maxItems))
         }
         
-        saveItems()
+        scheduleSave()
     }
     
     func copyToClipboard(_ item: ClipboardItem) {
@@ -147,174 +228,143 @@ class ClipboardManager: ObservableObject {
         }
     }
     
-    func copyAndPaste(_ item: ClipboardItem, shouldMinimize: Bool = true) {
-        // Primeiro coloca no clipboard
-        copyToClipboard(item)
-        
-        // Minimiza a janela se solicitado
-        if shouldMinimize {
-            DispatchQueue.main.async {
-                if let window = NSApplication.shared.windows.first {
-                    window.miniaturize(nil)
-                }
-            }
-        }
-        
-        // Aguarda um momento para garantir que o clipboard foi atualizado e a janela minimizada
-        DispatchQueue.main.asyncAfter(deadline: .now() + (shouldMinimize ? 0.3 : 0.1)) {
-            // Simula Cmd+V
-            self.simulatePaste()
-        }
-    }
-    
-    private func simulatePaste() {
-        // Cria evento de Cmd+V
-        let source = CGEventSource(stateID: .hidSystemState)
-        
-        // Evento de pressionar Cmd
-        let cmdDown = CGEvent(keyboardEventSource: source, virtualKey: 0x37, keyDown: true) // Cmd key
-        cmdDown?.flags = .maskCommand
-        
-        // Evento de pressionar V
-        let vDown = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true) // V key
-        vDown?.flags = .maskCommand
-        
-        // Evento de soltar V
-        let vUp = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false) // V key
-        vUp?.flags = .maskCommand
-        
-        // Evento de soltar Cmd
-        let cmdUp = CGEvent(keyboardEventSource: source, virtualKey: 0x37, keyDown: false) // Cmd key
-        
-        // Envia os eventos
-        cmdDown?.post(tap: .cghidEventTap)
-        vDown?.post(tap: .cghidEventTap)
-        vUp?.post(tap: .cghidEventTap)
-        cmdUp?.post(tap: .cghidEventTap)
-    }
-    
     func deleteItem(_ item: ClipboardItem) {
         items.removeAll { $0.id == item.id }
-        saveItems()
+        scheduleSave()
     }
     
     func clearAll() {
         items.removeAll()
-        saveItems()
+        scheduleSave()
     }
     
-    private func saveItems() {
-        if let encoded = try? JSONEncoder().encode(items) {
-            UserDefaults.standard.set(encoded, forKey: "clipboardItems")
+    private var storeURL: URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dir = appSupport.appendingPathComponent("Copybin", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("clipboard.json")
+    }
+    
+    private func saveItemsNow() {
+        do {
+            let data = try JSONEncoder().encode(items)
+            try data.write(to: storeURL, options: .atomic)
+        } catch {
+            print("Fail to save history:", error)
         }
+    }
+
+    private func scheduleSave() {
+        // cancela tentativa anterior e agenda outra
+        saveWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.saveItemsNow()
+        }
+        saveWorkItem = work
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + saveDelay, execute: work)
     }
     
     private func loadItems() {
-        if let data = UserDefaults.standard.data(forKey: "clipboardItems"),
+        if let data = try? Data(contentsOf: storeURL),
            let decoded = try? JSONDecoder().decode([ClipboardItem].self, from: data) {
             self.items = decoded
+            return
         }
     }
 }
 
-// MARK: - View do item individual
-struct ClipboardItemView: View {
+// MARK: - Card de item
+struct ClipboardCard: View {
     let item: ClipboardItem
     let onCopy: () -> Void
-    let onCopyAndPaste: () -> Void
     let onDelete: () -> Void
+
+    @State private var isHovering = false
     
     var body: some View {
         HStack(spacing: 12) {
-            // Ícone do tipo ou preview da imagem
-            if item.type == .image, let imageData = item.imageData, let nsImage = NSImage(data: imageData) {
-                Image(nsImage: nsImage)
+            // Preview: imagem ou ícone
+            if item.type == .image, let data = item.imageData, let nsImg = NSImage(data: data) {
+                Image(nsImage: nsImg)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(width: 40, height: 40)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                    )
+                    .frame(width: 52, height: 52)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
             } else {
-                Image(systemName: item.type.icon)
-                    .foregroundColor(.blue)
-                    .frame(width: 20)
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.primary.opacity(0.05))
+                    Image(systemName: item.type.icon)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.primary.opacity(0.7))
+                }
+                .frame(width: 52, height: 52)
             }
-            
-            VStack(alignment: .leading, spacing: 4) {
-                // Conteúdo (limitado)
-                if item.type == .image, let imageData = item.imageData {
-                    HStack {
-                        Text("Imagem")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(.primary)
-                        
-                        Spacer()
-                        
-                        Text("\(ByteCountFormatter.string(fromByteCount: Int64(imageData.count), countStyle: .file))")
+
+            // Texto + meta
+            VStack(alignment: .leading, spacing: 6) {
+                if item.type == .image, let data = item.imageData {
+                    HStack(spacing: 6) {
+                        TypePill(type: item.type)
+                        Text(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file))
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(.secondary)
                     }
                 } else {
                     Text(item.content)
                         .lineLimit(2)
                         .font(.system(size: 13))
-                        .foregroundColor(.primary)
                 }
-                
-                // Timestamp
-                Text(formatDate(item.timestamp))
+
+                Text(item.timestamp.timeAgoString)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(.secondary)
             }
-            
-            Spacer()
-            
-            // Botões de ação
-            HStack(spacing: 8) {
+
+            Spacer(minLength: 8)
+
+            // Ações
+            HStack(spacing: 6) {
                 Button(action: onCopy) {
-                    Image(systemName: "doc.on.clipboard")
-                        .foregroundColor(.blue)
+                    Label("Copiar", systemImage: "doc.on.doc")
                 }
-                .buttonStyle(PlainButtonStyle())
-                .help("Copiar para clipboard")
-                
-                Button(action: onDelete) {
-                    Image(systemName: "trash")
-                        .foregroundColor(.red)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+
+                Button(role: .destructive, action: onDelete) {
+                    Label("Excluir", systemImage: "trash")
                 }
-                .buttonStyle(PlainButtonStyle())
-                .help("Excluir item")
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
             }
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 12)
-        .background(Color(NSColor.controlBackgroundColor))
-        .cornerRadius(8)
-        .onTapGesture {
-            // Um clique já cola automaticamente
-            onCopyAndPaste()
-        }
-    }
-    
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        _ = Date()
-        let calendar = Calendar.current
-        
-        if calendar.isDateInToday(date) {
-            formatter.dateFormat = "HH:mm"
-        } else if calendar.isDateInYesterday(date) {
-            return "Ontem"
-        } else {
-            formatter.dateFormat = "dd/MM"
-        }
-        
-        return formatter.string(from: date)
+        .padding(12)
+        .background(CopybinTheme.cardBG, in: RoundedRectangle(cornerRadius: CopybinTheme.radius))
+        .overlay(
+            RoundedRectangle(cornerRadius: CopybinTheme.radius)
+                .stroke(CopybinTheme.cardStroke, lineWidth: 1)
+        )
+        .shadow(color: CopybinTheme.shadow, radius: 8, x: 0, y: 4)
+        .contentShape(Rectangle())
+        .scaleEffect(isHovering ? 1.01 : 1.0)
+        .animation(.easeOut(duration: 0.12), value: isHovering)
+        .onHover { inside in isHovering = inside }
     }
 }
+
+struct TypePill: View {
+    let type: ClipboardItem.ClipboardType
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: type.icon).font(.caption2.bold())
+            Text(type.label).font(.caption.bold())
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(Color.primary.opacity(0.08), in: Capsule())
+        .foregroundStyle(.primary.opacity(0.8))
+    }
+}
+
 
 // MARK: - View principal
 struct ContentView: View {
@@ -340,124 +390,119 @@ struct ContentView: View {
     }
     
     var body: some View {
-        VStack(spacing: 0) {
-            // Barra superior
-            VStack(spacing: 12) {
-                // Título e contador
-                HStack {
-                    Text("Histórico do Clipboard")
-                        .font(.title2)
-                        .fontWeight(.bold)
-                    
-                    Spacer()
-                    
-                    Text("\(filteredItems.count) itens")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    
-                    // Botão limpar tudo
-                    Button("Limpar Tudo") {
-                        clipboardManager.clearAll()
+        VStack(spacing: 12) {
+            // HEADER
+            ZStack(alignment: .bottomLeading) {
+                RoundedRectangle(cornerRadius: 18)
+                    .fill(CopybinTheme.headerGradient)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18)
+                            .strokeBorder(.white.opacity(0.15), lineWidth: 1)
+                    )
+
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "doc.on.clipboard.fill")
+                            .font(.system(size: 16, weight: .bold))
+                            .padding(8)
+                            .background(.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 10))
+                        Text("Clipboard History")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.95))
+                        Spacer(minLength: 8)
+
+                        Toggle("Auto-hide", isOn: $autoMinimize)
+                            .toggleStyle(.switch)
+                            .labelsHidden()
+                            .help("Minimiza ao colar")
+                            .padding(.trailing, 2)
+
+                        Button("Clear All") { clipboardManager.clearAll() }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.white.opacity(0.25))
+                            .foregroundStyle(.white)
+                            .controlSize(.small)
                     }
-                    .buttonStyle(PlainButtonStyle())
-                    .foregroundColor(.red)
-                    
-                    // Toggle para auto-minimizar
-                    Toggle("Auto minimizar", isOn: $autoMinimize)
-                        .toggleStyle(SwitchToggleStyle())
-                        .scaleEffect(0.8)
-                        .help("Minimiza a janela automaticamente ao colar")
-                }
-                
-                // Barra de busca
-                HStack {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundColor(.secondary)
-                    
-                    TextField("Buscar no histórico...", text: $searchText)
-                        .textFieldStyle(PlainTextFieldStyle())
-                }
-                .padding(8)
-                .background(Color(NSColor.controlBackgroundColor))
-                .cornerRadius(8)
-                
-                // Filtros por tipo
-                HStack {
-                    Button(action: { selectedType = nil }) {
-                        Text("Todos")
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 4)
-                            .background(selectedType == nil ? Color.blue : Color.clear)
-                            .foregroundColor(selectedType == nil ? .white : .primary)
-                            .cornerRadius(4)
+
+                    // Busca
+                    HStack {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(.white.opacity(0.8))
+                        TextField("Search…", text: $searchText)
+                            .textFieldStyle(.plain)
+                            .foregroundStyle(.white)
+                            .tint(.white)
                     }
-                    .buttonStyle(PlainButtonStyle())
-                    
-                    ForEach(ClipboardItem.ClipboardType.allCases, id: \.self) { type in
-                        Button(action: { selectedType = type }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: type.icon)
-                                Text(type.rawValue.capitalized)
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 4)
-                            .background(selectedType == type ? Color.blue : Color.clear)
-                            .foregroundColor(selectedType == type ? .white : .primary)
-                            .cornerRadius(4)
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .background(.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 10))
+
+                    // Filtros por tipo
+                    HStack {
+                        Button(action: { selectedType = nil }) {
+                            Text("Todos")
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 4)
+                                .background(selectedType == nil ? Color.blue : Color.clear)
+                                .foregroundColor(selectedType == nil ? .white : .primary)
+                                .cornerRadius(4)
                         }
                         .buttonStyle(PlainButtonStyle())
+                        
+                        ForEach(ClipboardItem.ClipboardType.allCases, id: \.self) { type in
+                            Button(action: { selectedType = type }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: type.icon)
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 4)
+                                .background(selectedType == type ? Color.blue : Color.clear)
+                                .foregroundColor(selectedType == type ? .white : .primary)
+                                .cornerRadius(4)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                        
+                        Spacer()
                     }
-                    
-                    Spacer()
                 }
+                .padding(16)
             }
-            .padding()
-            .background(Color(NSColor.windowBackgroundColor))
-            
-            Divider()
-            
-            // Lista de itens
+            .frame(height: 150)
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+
+            // LISTA / EMPTY STATE
             if filteredItems.isEmpty {
-                VStack(spacing: 16) {
+                VStack(spacing: 14) {
                     Image(systemName: "clipboard")
-                        .font(.system(size: 48))
-                        .foregroundColor(.secondary)
-                    
-                    Text(searchText.isEmpty ? "Nenhum item no histórico" : "Nenhum item encontrado")
-                        .font(.headline)
-                        .foregroundColor(.secondary)
-                    
+                        .font(.system(size: 46))
+                        .foregroundStyle(.secondary)
+                    Text(searchText.isEmpty ? "No Items" : "No items found")
+                        .font(.headline).foregroundStyle(.secondary)
                     if searchText.isEmpty {
-                        Text("Copie algo com Cmd+C para começar!")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
+                        Text("Copy something with Cmd+C to start!")
+                            .font(.subheadline).foregroundStyle(.secondary)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(NSColor.controlBackgroundColor).opacity(0.3))
+                .padding(.bottom, 12)
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 8) {
+                    LazyVStack(spacing: 10) {
                         ForEach(filteredItems) { item in
-                            ClipboardItemView(
+                            ClipboardCard(
                                 item: item,
-                                onCopy: {
-                                    clipboardManager.copyToClipboard(item)
-                                },
-                                onCopyAndPaste: {
-                                    clipboardManager.copyAndPaste(item, shouldMinimize: autoMinimize)
-                                },
-                                onDelete: {
-                                    clipboardManager.deleteItem(item)
-                                }
+                                onCopy: { clipboardManager.copyToClipboard(item) },
+                                onDelete: { clipboardManager.deleteItem(item) }
                             )
                         }
                     }
-                    .padding()
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 12)
                 }
             }
         }
-        .frame(minWidth: 400, minHeight: 500)
+        .frame(minWidth: 420, minHeight: 540)
     }
 }
 
